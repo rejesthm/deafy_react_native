@@ -58,6 +58,15 @@ const tensorSlice = createSlice({
   initialState,
   reducers: {
     // Camera actions
+    setCameraActive: (state, action: PayloadAction<boolean>) => {
+      state.isCameraActive = action.payload;
+    },
+    setDetectionActive: (state, action: PayloadAction<boolean>) => {
+      state.isDetectionActive = action.payload;
+    },
+    setError: (state, action: PayloadAction<string | null>) => {
+      state.detectorError = action.payload;
+    },
     initializeCameraSuccess: state => {
       state.isCameraInitialized = true;
       state.cameraError = null;
@@ -134,6 +143,9 @@ const tensorSlice = createSlice({
 });
 
 export const {
+  setCameraActive,
+  setDetectionActive,
+  setError,
   initializeCameraSuccess,
   initializeCameraFailure,
   stopCamera,

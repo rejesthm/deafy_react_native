@@ -1,0 +1,20 @@
+export {
+  setCameraActive,
+  setDetectionActive,
+  setError,
+  initializeCameraSuccess,
+  initializeCameraFailure,
+  stopCamera,
+  initializeDetectorSuccess,
+  initializeDetectorFailure,
+  disposeDetector,
+  startFilming,
+  updateCountdown,
+  stopFilming,
+  startDetection,
+  stopDetection,
+  updateResults,
+  incrementFrameCount,
+  resetTensorState,
+} from './slices/tensorSlice';
+export {default as tensorReducer} from './slices/tensorSlice';

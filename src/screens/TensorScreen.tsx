@@ -1,12 +1,12 @@
 /**
  * TensorScreen - Main camera detection screen
- * Matches Flutter tensor_screen.dart functionality
+ * Real-time hand landmarks via Vision Camera + resize plugin + TFLite hand landmark model.
  */
 
-import React, {useEffect, useRef, useCallback, useState} from 'react';
+import React, {useEffect, useRef, useCallback, useState, useMemo} from 'react';
 import {StyleSheet, View, Alert} from 'react-native';
 import {Camera, useCameraDevice, useFrameProcessor} from 'react-native-vision-camera';
-import {runOnJS} from 'react-native-reanimated';
+import {runOnJS, useSharedValue} from 'react-native-reanimated';
 import {useAppDispatch, useAppSelector} from '@store/hooks';
 import {
   setCameraActive,
@@ -32,8 +32,19 @@ import {
 } from '@components/camera';
 import {HolisticDetector} from '@services/HolisticDetector';
 import {SequenceBuffer} from '@services/SequenceBuffer';
+import {
+  buildRecognitionFromLandmarks,
+  parseLandmarksFromTFLite,
+} from '@services/recognitionFromLandmarks';
 import {requestCameraPermission} from '@utils/permissions';
 import {theme} from '@theme';
+import {useResizePlugin} from 'vision-camera-resize-plugin';
+import {useTensorflowModel} from 'react-native-fast-tflite';
+
+const HAND_LANDMARK_MODEL_URL =
+  'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hand_landmark_lite.tflite';
+const LANDMARK_INPUT_SIZE = 224;
+const PROCESS_INTERVAL_MS = 100;
 
 const detector = new HolisticDetector();
 const sequenceBuffer = new SequenceBuffer(30);
@@ -51,6 +62,12 @@ export const TensorScreen: React.FC = () => {
   const device = useCameraDevice('front');
   const [cameraSize, setCameraSize] = useState({width: 0, height: 0});
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastProcessTime = useSharedValue(0);
+
+  const {resize} = useResizePlugin();
+  const handModelSource = useMemo(() => ({url: HAND_LANDMARK_MODEL_URL}), []);
+  const tfliteState = useTensorflowModel(handModelSource);
+  const tfliteModel = tfliteState.state === 'loaded' ? tfliteState.model : undefined;
 
   useEffect(() => {
     initializeCamera();
@@ -123,41 +140,69 @@ export const TensorScreen: React.FC = () => {
     (result: any) => {
       if (!isDetectionActive) return;
 
-      dispatch(updateResults(result));
+      let leftHandLandmarks = result.leftHandLandmarks;
+      let rightHandLandmarks = result.rightHandLandmarks;
+      if (result.rawLandmarks && Array.isArray(result.rawLandmarks) && result.rawLandmarks.length >= 63) {
+        const landmarks = parseLandmarksFromTFLite(result.rawLandmarks);
+        if (landmarks.length === 21) leftHandLandmarks = landmarks;
+      }
 
-      // Add to sequence buffer if filming and countdown finished
-      if (isFilming && countdown === 0 && result.landmarks) {
-        sequenceBuffer.addFrame(result.landmarks);
+      let stat = result;
+      if (
+        (leftHandLandmarks || rightHandLandmarks) &&
+        (!result.recognitions || result.recognitions.length === 0)
+      ) {
+        stat = buildRecognitionFromLandmarks(
+          leftHandLandmarks,
+          rightHandLandmarks,
+          {
+            processingTime: result.processingTime ?? 0,
+            fps: result.fps ?? 10,
+            timestamp: result.timestamp instanceof Date ? result.timestamp : new Date(),
+          },
+        );
+      }
+
+      dispatch(updateResults(stat));
+
+      if (isFilming && countdown === 0 && stat.landmarks && stat.landmarks.length > 0) {
+        sequenceBuffer.addFrame(stat.landmarks);
       }
     },
-    [dispatch, isDetectionActive, isFilming, countdown]
-  );
-
-  /** Run detector when frame data is available (e.g. from native plugin or test harness). */
-  const processFrameWithDetector = useCallback(
-    async (frame: any, timestamp: number) => {
-      if (!isDetectionActive || !frame) return;
-      try {
-        const result = await detector.processFrame(frame, timestamp);
-        if (result) processFrame(result);
-      } catch (e) {
-        console.warn('Detector processFrame failed:', e);
-      }
-    },
-    [isDetectionActive, processFrame]
+    [dispatch, isDetectionActive, isFilming, countdown],
   );
 
   const frameProcessor = useFrameProcessor(
     (frame: any) => {
       'worklet';
       const now = Date.now();
-      if (now - (frameProcessor as any).lastProcessTime < 100) return;
-      (frameProcessor as any).lastProcessTime = now;
+      if (now - lastProcessTime.value < PROCESS_INTERVAL_MS) return;
+      lastProcessTime.value = now;
+      const processingStart = now;
 
       try {
-        // When a native frame processor plugin provides frame data to JS, call
-        // processFrameWithDetector(frame, now) to run MediaPipe and show ASL letter.
-        // Until then we pass placeholder result so overlay and state stay consistent.
+        const model = tfliteModel;
+        if (model && resize) {
+          const resized = resize(frame, {
+            scale: {width: LANDMARK_INPUT_SIZE, height: LANDMARK_INPUT_SIZE},
+            pixelFormat: 'rgb',
+            dataType: 'float32',
+          });
+          const outputs = model.runSync([resized]);
+          const rawLandmarks = outputs[0];
+          if (rawLandmarks && rawLandmarks.length >= 63) {
+            const arr = Array.from(rawLandmarks as Float32Array);
+            const elapsed = Date.now() - processingStart;
+            const fps = 1000 / PROCESS_INTERVAL_MS;
+            runOnJS(processFrame)({
+              rawLandmarks: arr,
+              processingTime: elapsed,
+              fps,
+              timestamp: new Date(),
+            });
+            return;
+          }
+        }
         runOnJS(processFrame)({
           recognitions: [],
           leftHandLandmarks: undefined,
@@ -166,11 +211,18 @@ export const TensorScreen: React.FC = () => {
           processingTime: 0,
           timestamp: new Date(),
         });
-      } catch (error) {
-        console.error('Frame processing error:', error);
+      } catch (_) {
+        runOnJS(processFrame)({
+          recognitions: [],
+          leftHandLandmarks: undefined,
+          rightHandLandmarks: undefined,
+          fps: 10,
+          processingTime: 0,
+          timestamp: new Date(),
+        });
       }
     },
-    [processFrame]
+    [processFrame, tfliteModel, resize],
   );
 
   if (!device) {
