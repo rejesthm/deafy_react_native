@@ -4,9 +4,10 @@
  */
 
 import React, {useEffect, useRef, useCallback, useState, useMemo} from 'react';
-import {StyleSheet, View, Alert} from 'react-native';
+import {StyleSheet, View, Alert, Dimensions} from 'react-native';
 import {Camera, useCameraDevice, useFrameProcessor} from 'react-native-vision-camera';
-import {runOnJS, useSharedValue} from 'react-native-reanimated';
+import {Worklets} from 'react-native-worklets-core';
+import {useSharedValue} from 'react-native-reanimated';
 import {useAppDispatch, useAppSelector} from '@store/hooks';
 import {
   setCameraActive,
@@ -30,7 +31,6 @@ import {
   CountdownOverlay,
   LetterOverlay,
 } from '@components/camera';
-import {HolisticDetector} from '@services/HolisticDetector';
 import {SequenceBuffer} from '@services/SequenceBuffer';
 import {
   buildRecognitionFromLandmarks,
@@ -42,11 +42,11 @@ import {useResizePlugin} from 'vision-camera-resize-plugin';
 import {useTensorflowModel} from 'react-native-fast-tflite';
 
 const HAND_LANDMARK_MODEL_URL =
-  'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hand_landmark_lite.tflite';
+  'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hand_landmark_full.tflite';
 const LANDMARK_INPUT_SIZE = 224;
 const PROCESS_INTERVAL_MS = 100;
+const SMOOTHING_FRAMES = 4; // Require N consecutive same letter before showing
 
-const detector = new HolisticDetector();
 const sequenceBuffer = new SequenceBuffer(30);
 
 export const TensorScreen: React.FC = () => {
@@ -63,27 +63,18 @@ export const TensorScreen: React.FC = () => {
   const [cameraSize, setCameraSize] = useState({width: 0, height: 0});
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessTime = useSharedValue(0);
+  const letterBufferRef = useRef<string[]>([]);
+  const [smoothedLabels, setSmoothedLabels] = useState<string[]>([]);
 
   const {resize} = useResizePlugin();
   const handModelSource = useMemo(() => ({url: HAND_LANDMARK_MODEL_URL}), []);
   const tfliteState = useTensorflowModel(handModelSource);
   const tfliteModel = tfliteState.state === 'loaded' ? tfliteState.model : undefined;
 
-  useEffect(() => {
-    initializeCamera();
-    return () => {
-      detector.dispose();
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-      }
-    };
-  }, []);
-
-  const initializeCamera = async () => {
+  const initializeCamera = useCallback(async () => {
     try {
       const granted = await requestCameraPermission();
       if (granted) {
-        await detector.initialize();
         dispatch(setCameraActive(true));
         dispatch(setDetectionActive(true));
       } else {
@@ -92,7 +83,47 @@ export const TensorScreen: React.FC = () => {
     } catch (error) {
       dispatch(setError(`Failed to initialize: ${error}`));
     }
-  };
+  }, [dispatch]);
+
+  useEffect(() => {
+    initializeCamera();
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, [initializeCamera]);
+
+  // Temporal smoothing: only show letter after N consecutive frames match
+  useEffect(() => {
+    if (!currentResult?.recognitions?.length) {
+      letterBufferRef.current = [];
+      setSmoothedLabels([]);
+      return;
+    }
+    const labels = currentResult.recognitions
+      .map(r => r.label)
+      .filter(l => l && l !== 'Unknown');
+    const primary = labels[0] ?? null;
+    if (!primary) {
+      letterBufferRef.current = [];
+      setSmoothedLabels([]);
+      return;
+    }
+    const buf = letterBufferRef.current;
+    if (buf.length > 0 && buf[buf.length - 1] !== primary) {
+      buf.length = 0;
+    }
+    buf.push(primary);
+    if (buf.length > SMOOTHING_FRAMES) {
+      buf.shift();
+    }
+    if (buf.length === SMOOTHING_FRAMES && buf.every(l => l === buf[0])) {
+      setSmoothedLabels([buf[0]]);
+    } else {
+      setSmoothedLabels([]);
+    }
+  }, [currentResult]);
 
   const handleStartFilming = useCallback(() => {
     dispatch(startFilming());
@@ -158,18 +189,42 @@ export const TensorScreen: React.FC = () => {
           {
             processingTime: result.processingTime ?? 0,
             fps: result.fps ?? 10,
-            timestamp: result.timestamp instanceof Date ? result.timestamp : new Date(),
+            timestamp:
+              typeof result.timestamp === 'number'
+                ? result.timestamp
+                : result.timestamp instanceof Date
+                  ? result.timestamp.getTime()
+                  : Date.now(),
           },
         );
       }
 
-      dispatch(updateResults(stat));
+      // Ensure timestamp is serializable (ISO string) for Redux
+      const serializableStat = {
+        ...stat,
+        timestamp:
+          typeof stat.timestamp === 'string'
+            ? stat.timestamp
+            : typeof stat.timestamp === 'number'
+              ? new Date(stat.timestamp).toISOString()
+              : new Date().toISOString(),
+      };
+      dispatch(updateResults(serializableStat));
 
-      if (isFilming && countdown === 0 && stat.landmarks && stat.landmarks.length > 0) {
-        sequenceBuffer.addFrame(stat.landmarks);
+      if (
+        isFilming &&
+        countdown === 0 &&
+        (stat.leftHandLandmarks || stat.rightHandLandmarks)
+      ) {
+        sequenceBuffer.addFrame(stat.leftHandLandmarks, stat.rightHandLandmarks);
       }
     },
     [dispatch, isDetectionActive, isFilming, countdown],
+  );
+
+  const runOnJSProcessFrame = useMemo(
+    () => Worklets.createRunOnJS(processFrame),
+    [processFrame],
   );
 
   const frameProcessor = useFrameProcessor(
@@ -194,35 +249,35 @@ export const TensorScreen: React.FC = () => {
             const arr = Array.from(rawLandmarks as Float32Array);
             const elapsed = Date.now() - processingStart;
             const fps = 1000 / PROCESS_INTERVAL_MS;
-            runOnJS(processFrame)({
+            runOnJSProcessFrame({
               rawLandmarks: arr,
               processingTime: elapsed,
               fps,
-              timestamp: new Date(),
+              timestamp: Date.now(),
             });
             return;
           }
         }
-        runOnJS(processFrame)({
+        runOnJSProcessFrame({
           recognitions: [],
           leftHandLandmarks: undefined,
           rightHandLandmarks: undefined,
           fps: 10,
           processingTime: 0,
-          timestamp: new Date(),
+          timestamp: Date.now(),
         });
       } catch (_) {
-        runOnJS(processFrame)({
+        runOnJSProcessFrame({
           recognitions: [],
           leftHandLandmarks: undefined,
           rightHandLandmarks: undefined,
           fps: 10,
           processingTime: 0,
-          timestamp: new Date(),
+          timestamp: Date.now(),
         });
       }
     },
-    [processFrame, tfliteModel, resize],
+    [runOnJSProcessFrame, tfliteModel, resize],
   );
 
   if (!device) {
@@ -248,17 +303,23 @@ export const TensorScreen: React.FC = () => {
           device={device}
           isActive={isCameraActive}
           frameProcessor={frameProcessor}
+          androidPreviewViewType="texture-view"
         />
 
-        {/* Hand Skeleton Overlay */}
-        {currentResult && (
-          <HandSkeletonOverlay
-            leftHandLandmarks={currentResult.leftHandLandmarks}
-            rightHandLandmarks={currentResult.rightHandLandmarks}
-            width={cameraSize.width}
-            height={cameraSize.height}
-          />
-        )}
+        {/* Hand Skeleton Overlay - positioned above camera with explicit zIndex */}
+        {currentResult &&
+          (currentResult.leftHandLandmarks || currentResult.rightHandLandmarks) && (
+            <View
+              style={styles.overlayContainer}
+              pointerEvents="none">
+              <HandSkeletonOverlay
+                leftHandLandmarks={currentResult.leftHandLandmarks}
+                rightHandLandmarks={currentResult.rightHandLandmarks}
+                width={cameraSize.width || Dimensions.get('window').width}
+                height={cameraSize.height || Dimensions.get('window').height}
+              />
+            </View>
+          )}
 
         {/* Performance Metrics */}
         {currentResult && (
@@ -271,11 +332,9 @@ export const TensorScreen: React.FC = () => {
         {/* Countdown Overlay */}
         <CountdownOverlay count={countdown} />
 
-        {/* Detected ASL letter or gesture */}
-        {currentResult?.recognitions && currentResult.recognitions.length > 0 && (
-          <LetterOverlay
-            labels={currentResult.recognitions.map(r => r.label)}
-          />
+        {/* Detected ASL letter (smoothed over N frames for stability) */}
+        {smoothedLabels.length > 0 && (
+          <LetterOverlay labels={smoothedLabels} />
         )}
       </View>
 
@@ -310,6 +369,10 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.lg,
     overflow: 'hidden',
     margin: theme.spacing.lg,
+  },
+  overlayContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
   },
   controls: {
     paddingHorizontal: theme.spacing.xl,

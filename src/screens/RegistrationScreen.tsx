@@ -7,7 +7,7 @@ import {StyleSheet, Alert} from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {useAppDispatch, useAppSelector} from '@store/hooks';
-import {registerUser} from '@store/authSlice';
+import {register} from '@store/slices/authSlice';
 import {
   ScreenContainer,
   ScrollContainer,
@@ -52,7 +52,7 @@ export const RegistrationScreen: React.FC = () => {
     }
 
     try {
-      await dispatch(registerUser({username, email, password})).unwrap();
+      await dispatch(register({name: username, email, password, passwordConfirmation: confirmPassword})).unwrap();
       Alert.alert('Success', 'Account created successfully!');
       navigation.navigate('Login');
     } catch (error: any) {

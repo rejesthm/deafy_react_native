@@ -42,8 +42,8 @@ export interface RecognitionStatistic {
   /** Current frames per second performance metric */
   fps: number;
 
-  /** Timestamp when the detection was performed */
-  timestamp: Date;
+  /** Timestamp when the detection was performed (ISO string for Redux serializability) */
+  timestamp: string;
 
   /** Left hand landmarks (if detected) */
   leftHandLandmarks?: HandLandmark[];

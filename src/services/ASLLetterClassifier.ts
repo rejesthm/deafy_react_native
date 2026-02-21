@@ -20,22 +20,25 @@ function dist(a: HandLandmark, b: HandLandmark): number {
   return Math.sqrt(distSq(a, b));
 }
 
-/** Finger tip is "extended" if tip is above (lower y in screen coords) the PIP joint */
+/** Finger tip is "extended" if tip is above (lower y in screen coords) the PIP joint.
+ *  Small tolerance (0.02) for noisy landmarks. */
 function isFingerExtended(
   landmarks: HandLandmark[],
   tipIdx: number,
   pipIdx: number,
 ): boolean {
-  return landmarks[tipIdx].y < landmarks[pipIdx].y;
+  return landmarks[tipIdx].y < landmarks[pipIdx].y + 0.02;
 }
 
-/** Thumb: tip 4, IP 3, MCP 2. Extended if tip is "out" from palm (compare y with 2) */
+/** Thumb: tip 4, IP 3, MCP 2. Extended if tip is "out" from palm (compare y with 2).
+ *  Small tolerance for noisy landmarks. */
 function isThumbExtended(landmarks: HandLandmark[]): boolean {
-  return landmarks[4].y < landmarks[2].y;
+  return landmarks[4].y < landmarks[2].y + 0.02;
 }
 
-/** Check if two landmarks are close (touching) within threshold */
-function areTouching(a: HandLandmark, b: HandLandmark, threshold = 0.08): boolean {
+/** Check if two landmarks are close (touching) within threshold.
+ *  0.10 allows for slight landmark jitter while still distinguishing F from B. */
+function areTouching(a: HandLandmark, b: HandLandmark, threshold = 0.10): boolean {
   return dist(a, b) < threshold;
 }
 
@@ -74,9 +77,12 @@ export function classifyASLLetter(landmarks: HandLandmark[]): string | null {
     return 'F';
   }
 
-  // D / G: Only index extended. D = index up; G = index pointing sideways
+  // D / G: Only index extended. D = index up; G = index pointing sideways.
+  // Use ratio > 0.7 to favor clear horizontal vs vertical distinction.
   if (indexExt && !middleExt && !ringExt && !pinkyExt) {
-    const indexHorizontal = Math.abs(indexTip.x - wrist.x) > Math.abs(indexTip.y - wrist.y);
+    const dx = Math.abs(indexTip.x - wrist.x);
+    const dy = Math.abs(indexTip.y - wrist.y);
+    const indexHorizontal = dx > dy * 0.7;
     return indexHorizontal ? 'G' : 'D';
   }
 

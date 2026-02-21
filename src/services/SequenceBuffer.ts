@@ -1,14 +1,29 @@
 /**
- * Sequence buffer for collecting landmark frames for LSTM model
- * Matches GitHub model requirements: 30 frames × 88 landmarks × 3 coordinates
+ * Sequence buffer for collecting hand landmark frames for LSTM model.
+ * Hand-only: 30 frames × 42 landmarks (21 left + 21 right) × 3 coordinates.
+ * Missing hand is padded with zeros.
  */
 
-import {HandLandmark, IMPORTANT_LANDMARKS} from '@models';
+import {HandLandmark} from '@models';
 
-const SEQUENCE_LENGTH = 30; // Number of frames to buffer
+const SEQUENCE_LENGTH = 30;
+const HAND_LANDMARK_COUNT = 21;
+const HANDS_PER_FRAME = 2; // left + right
+const LANDMARKS_PER_FRAME = HAND_LANDMARK_COUNT * HANDS_PER_FRAME; // 42
+
+/** Placeholder for missing hand (zeros) */
+const EMPTY_HAND: number[][] = Array.from({length: HAND_LANDMARK_COUNT}, () => [0, 0, 0]);
+
+function landmarksToArray(landmarks: HandLandmark[]): number[][] {
+  return landmarks.slice(0, HAND_LANDMARK_COUNT).map(l => [
+    l.x ?? 0,
+    l.y ?? 0,
+    (l.z ?? 0),
+  ]);
+}
 
 export class SequenceBuffer {
-  private buffer: number[][][] = []; // [frames][landmarks][coordinates]
+  private buffer: number[][][] = []; // [frames][landmarks][x,y,z]
   private maxLength: number;
 
   constructor(maxLength: number = SEQUENCE_LENGTH) {
@@ -16,92 +31,66 @@ export class SequenceBuffer {
   }
 
   /**
-   * Add a new frame of landmarks to the buffer
-   * @param landmarks - All 543 holistic landmarks
+   * Add a new frame of hand landmarks to the buffer.
+   * @param leftHandLandmarks - 21 left hand landmarks (optional)
+   * @param rightHandLandmarks - 21 right hand landmarks (optional)
+   * At least one hand must be provided. Missing hand is padded with zeros.
    */
-  addFrame(landmarks: HandLandmark[]): void {
-    if (landmarks.length !== 543) {
-      console.warn(`Expected 543 landmarks, got ${landmarks.length}`);
-      return;
-    }
+  addFrame(
+    leftHandLandmarks?: HandLandmark[],
+    rightHandLandmarks?: HandLandmark[],
+  ): void {
+    const left = leftHandLandmarks?.length === HAND_LANDMARK_COUNT
+      ? landmarksToArray(leftHandLandmarks)
+      : EMPTY_HAND;
+    const right = rightHandLandmarks?.length === HAND_LANDMARK_COUNT
+      ? landmarksToArray(rightHandLandmarks)
+      : EMPTY_HAND;
 
-    // Extract only important landmarks
-    const importantLandmarks = IMPORTANT_LANDMARKS.map((index: number) => {
-      const landmark = landmarks[index];
-      return [landmark.x, landmark.y, landmark.z];
-    });
+    const frame = [...left, ...right];
+    this.buffer.push(frame);
 
-    // Add to buffer
-    this.buffer.push(importantLandmarks);
-
-    // Keep only last maxLength frames
     if (this.buffer.length > this.maxLength) {
       this.buffer.shift();
     }
   }
 
-  /**
-   * Check if buffer is full (ready for inference)
-   */
   isFull(): boolean {
     return this.buffer.length >= this.maxLength;
   }
 
   /**
-   * Get the current buffer as a flattened array for model input
-   * Shape: [30, 88, 3] → [30, 264]
+   * Get the buffer as flattened array for model input.
+   * Shape: [30, 42, 3] → 30 × 126 = 3780 floats
    */
   getSequence(): number[][] {
     if (!this.isFull()) {
       throw new Error('Buffer not full yet');
     }
-
-    // Return last 30 frames with 88 landmarks × 3 coordinates flattened
-    return this.buffer.slice(-this.maxLength).map(frame => {
-      return frame.flat(); // Flatten [88][3] to [264]
-    });
+    return this.buffer.slice(-this.maxLength).map(frame => frame.flat());
   }
 
-  /**
-   * Get preprocessed data ready for TFLite model
-   * Handles missing values with NaN (matching GitHub implementation)
-   */
   getPreprocessedSequence(): Float32Array {
     const sequence = this.getSequence();
-    const flatSequence = sequence.flat(); // [30 × 264] = [7920]
-
-    // Convert to Float32Array (TFLite input format)
+    const flatSequence = sequence.flat();
     return new Float32Array(flatSequence);
   }
 
-  /**
-   * Get buffer size
-   */
   getSize(): number {
     return this.buffer.length;
   }
 
-  /**
-   * Get buffer progress (0-1)
-   */
   getProgress(): number {
     return this.buffer.length / this.maxLength;
   }
 
-  /**
-   * Clear the buffer
-   */
   clear(): void {
     this.buffer = [];
   }
 
-  /**
-   * Get remaining frames needed
-   */
   getRemainingFrames(): number {
     return Math.max(0, this.maxLength - this.buffer.length);
   }
 }
 
-// Export singleton instance
 export const sequenceBuffer = new SequenceBuffer();

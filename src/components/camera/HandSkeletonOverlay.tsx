@@ -1,5 +1,6 @@
 /**
  * Hand Skeleton Overlay - Renders hand landmarks and connections
+ * Landmarks are normalized [0,1]; multiply by width/height for pixel coords.
  */
 
 import React from 'react';
@@ -16,6 +17,12 @@ interface HandSkeletonOverlayProps {
   height: number;
 }
 
+/** Normalize coord to [0,1] - model may output 0-224 or 0-1 */
+function norm(c: number): number {
+  if (c > 1) return Math.min(1, c / 224);
+  return Math.max(0, Math.min(1, c));
+}
+
 export const HandSkeletonOverlay: React.FC<HandSkeletonOverlayProps> = ({
   leftHandLandmarks,
   rightHandLandmarks,
@@ -30,45 +37,60 @@ export const HandSkeletonOverlay: React.FC<HandSkeletonOverlayProps> = ({
 
     return (
       <>
-        {/* Render connections */}
         {HAND_CONNECTIONS.map(([start, end], index) => {
           const startPoint = landmarks[start];
           const endPoint = landmarks[end];
           if (!startPoint || !endPoint) return null;
 
+          const x1 = norm(startPoint.x) * width;
+          const y1 = norm(startPoint.y) * height;
+          const x2 = norm(endPoint.x) * width;
+          const y2 = norm(endPoint.y) * height;
+
           return (
             <Line
               key={`connection-${index}`}
-              x1={startPoint.x * width}
-              y1={startPoint.y * height}
-              x2={endPoint.x * width}
-              y2={endPoint.y * height}
+              x1={x1}
+              y1={y1}
+              x2={x2}
+              y2={y2}
               stroke={color}
-              strokeWidth={2}
-              opacity={0.6}
+              strokeWidth={3}
+              opacity={0.9}
             />
           );
         })}
 
-        {/* Render landmarks */}
-        {landmarks.map((landmark, index) => (
-          <Circle
-            key={`landmark-${index}`}
-            cx={landmark.x * width}
-            cy={landmark.y * height}
-            r={4}
-            fill={color}
-            opacity={0.8}
-          />
-        ))}
+        {landmarks.map((landmark, index) => {
+          const cx = norm(landmark.x) * width;
+          const cy = norm(landmark.y) * height;
+          return (
+            <Circle
+              key={`landmark-${index}`}
+              cx={cx}
+              cy={cy}
+              r={6}
+              fill={color}
+              opacity={0.95}
+            />
+          );
+        })}
       </>
     );
   };
 
+  const w = Math.max(1, width);
+  const h = Math.max(1, height);
+
   return (
-    <Svg style={StyleSheet.absoluteFill} width={width} height={height}>
-      {renderHandSkeleton(leftHandLandmarks, theme.colors.leftHandColor)}
-      {renderHandSkeleton(rightHandLandmarks, theme.colors.rightHandColor)}
+    <Svg
+      style={StyleSheet.absoluteFill}
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="xMidYMid meet">
+      {renderHandSkeleton(leftHandLandmarks, theme.colors.leftHand)}
+      {renderHandSkeleton(rightHandLandmarks, theme.colors.rightHand)}
     </Svg>
   );
 };

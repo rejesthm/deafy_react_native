@@ -6,18 +6,40 @@
 import {Recognition, RecognitionStatistic, HandLandmark} from '@models';
 import {classifyASLLetter} from './ASLLetterClassifier';
 
+/** Min hand span (wrist to middle fingertip) in normalized coords. Below this = no real hand. */
+const MIN_HAND_SPAN = 0.06;
+
+/**
+ * Returns true if landmarks look like a real hand (not model hallucination when no hand present).
+ * The landmark model always outputs 63 floats; without this check, garbage gets classified as letters.
+ */
+function hasValidHandPresence(landmarks: HandLandmark[]): boolean {
+  if (!landmarks || landmarks.length < 21) return false;
+  const wrist = landmarks[0];
+  const middleTip = landmarks[12];
+  const span = Math.sqrt(
+    (middleTip.x - wrist.x) ** 2 + (middleTip.y - wrist.y) ** 2
+  );
+  return span >= MIN_HAND_SPAN;
+}
+
 /**
  * Build recognitions and full statistic from one or two hands' landmarks.
  * Classifies ASL letter (A–G) or gesture for each hand.
+ * Only classifies when landmarks pass hand presence check (avoids letters when no hand visible).
  */
 export function buildRecognitionFromLandmarks(
   leftHandLandmarks: HandLandmark[] | undefined,
   rightHandLandmarks: HandLandmark[] | undefined,
-  opts: { processingTime: number; fps: number; timestamp: Date },
+  opts: { processingTime: number; fps: number; timestamp: Date | string | number },
 ): RecognitionStatistic {
   const recognitions: Recognition[] = [];
   let id = 0;
-  if (leftHandLandmarks && leftHandLandmarks.length === 21) {
+  if (
+    leftHandLandmarks &&
+    leftHandLandmarks.length === 21 &&
+    hasValidHandPresence(leftHandLandmarks)
+  ) {
     const label = classifyASLLetter(leftHandLandmarks) ?? 'Unknown';
     recognitions.push({
       id: id++,
@@ -28,7 +50,11 @@ export function buildRecognitionFromLandmarks(
       landmarks: leftHandLandmarks,
     });
   }
-  if (rightHandLandmarks && rightHandLandmarks.length === 21) {
+  if (
+    rightHandLandmarks &&
+    rightHandLandmarks.length === 21 &&
+    hasValidHandPresence(rightHandLandmarks)
+  ) {
     const label = classifyASLLetter(rightHandLandmarks) ?? 'Unknown';
     recognitions.push({
       id: id++,
@@ -43,7 +69,12 @@ export function buildRecognitionFromLandmarks(
     recognitions,
     processingTime: opts.processingTime,
     fps: opts.fps,
-    timestamp: opts.timestamp,
+    timestamp:
+      typeof opts.timestamp === 'string'
+        ? opts.timestamp
+        : typeof opts.timestamp === 'number'
+          ? new Date(opts.timestamp).toISOString()
+          : opts.timestamp.toISOString(),
     leftHandLandmarks,
     rightHandLandmarks,
   };

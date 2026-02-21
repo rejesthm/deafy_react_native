@@ -7,7 +7,7 @@ import {StyleSheet, Alert} from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {useAppDispatch, useAppSelector} from '@store/hooks';
-import {loginUser} from '@store/authSlice';
+import {login} from '@store/slices/authSlice';
 import {
   ScreenContainer,
   ScrollContainer,
@@ -40,7 +40,7 @@ export const LoginScreen: React.FC = () => {
     }
 
     try {
-      await dispatch(loginUser({email, password})).unwrap();
+      await dispatch(login({email, password})).unwrap();
       // Navigation handled by root navigator observing auth state
     } catch (error: any) {
       Alert.alert('Login Failed', error.message || 'Invalid credentials');

@@ -1,0 +1,25 @@
+diff --git a/node_modules/metro/src/Server.js b/node_modules/metro/src/Server.js
+index ec933c0..4b691d8 100644
+--- a/node_modules/metro/src/Server.js
++++ b/node_modules/metro/src/Server.js
+@@ -975,7 +975,19 @@ class Server {
+       );
+       debug("Start symbolication");
+       const body = await req.rawBody;
+-      const parsedBody = JSON.parse(body);
++      if (body == null || body === '') {
++        res.statusCode = 400;
++        res.end(JSON.stringify({error: 'Symbolication request body is missing'}));
++        return;
++      }
++      let parsedBody;
++      try {
++        parsedBody = JSON.parse(body);
++      } catch (parseError) {
++        res.statusCode = 400;
++        res.end(JSON.stringify({error: 'Invalid symbolication request body'}));
++        return;
++      }
+       const rewriteAndNormalizeStackFrame = (frame, lineNumber) => {
+         invariant(
+           frame != null && typeof frame === "object",
